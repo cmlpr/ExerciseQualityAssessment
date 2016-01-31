@@ -2,21 +2,151 @@
 title: "ExerciseQualityAssessment"
 author: "CMLPR"
 date: "January 30, 2016"
-output: html_document
+output:
+  html_document:
+    toc: true
+    theme: united
+    fig_caption: yes
+    number_sections: yes
+    highlight: zenburn
+references: 
+- id: Velloso2013
+  title: Qualitative Activity Recognition of Weight Lifting Exercises
+  author:
+  - family: Velloso
+    given: Eduardo
+  - family: Bulling
+    given: Andreas
+  - family: Gellersen
+    given: Hans
+  - family: Ugulino
+    given: Wallace
+  - family: Fuks
+    given: Hugo
+  container-title: Proceedings of 4th International Conference in Cooperation with SIGCHI
+  publisher: ACM SIGCHI
+  issued:
+    year: 2013
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+# Executive Summary
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The goal of this study is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants and quantify _how well they did the exercise_. *Classe* variable in the training set defines the quality of the exercise. Classe _A_ is used when the person does the exercise correctly and Classe _B:E_ are used to specify the mistake type in the case of poor quality. For more information please refer to [@Velloso2013] and [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har#dataset).
 
-```{r}
-summary(cars)
+A set of training data set will be used to train various machine learning algorithms and then performance of the fitted models will be tested on a test data set. 
+
+# Load Packages
+
+In this project I will use mainly the _caret_package for ML and _dplyr_ for certain data manipulations. I also prefer to use _doMC_ package to reduce the computation time.  
+
+```{r setup, include = TRUE, warning=FALSE, message=FALSE}
+require(caret);require(doMC);require(dplyr)
+# Register parallel cores for use in training to reduce time consumption.
+registerDoMC(cores = 6)
 ```
 
-You can also embed plots, for example:
+# Load Data
 
-```{r, echo=FALSE}
-plot(cars)
+Use *read.table* function to load data. A quick look at the _csv_ file can show that there are many cells with NA values and some cells with division error. It is best to read both of them as _NAs_. Also after data is stored, _user_name_ and _classe_ columns are converted to factors. Testing data is also brought in for later use.
+
+```{r load, cache=TRUE}
+# Read Training Data
+rData <- read.table("pml-training.csv", header = TRUE, sep = ",", na.strings = c("NA", "#DIV/0!"), stringsAsFactors = FALSE)
+rData = mutate(rData, user_name = as.factor(user_name),
+                      classe    = as.factor(classe))
+dim(rData)
+table(rData$classe)
+table(rData$user_name)
+
+# Read Testing Data
+rTesting <- read.table("pml-testing.csv", header = TRUE, sep = ",", na.strings = c("NA", "#DIV/0!"), stringsAsFactors = FALSE)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# Pre-Processing
+
+## Data Cleaning
+
+The data set includes some columns that needs to be removed to create a robust model. Some column types that are removed can be summarized as follows:
+
+* Columns that have substantial number of _NA's_. Fraction of NA counts in each column are calculated. It was observed that 100 columns have over 97% NAs in them while the remaining 60 columns don't have any NAs in them. 
+* Since the data is associated with time stamps it makes sense to preserve timestamps for training the data and applying time slicing for cross validation. However response variable defining the quality is given for each observation and test set provided for 20 independent observations. Therefore, it doesn't make much sense to use the first column, timestamp columns and window columns (window columns are used by the authors of the original article for training)
+
+```{r clean, cache=TRUE}
+# Remove columns with substantial NAs
+NAfraction <- sapply(rData, function(x) {sum(is.na(x)) / length(x)})
+table(NAfraction)
+cData <- rData[, NAfraction < 0.5] # 50% threshold will capture everything
+
+colsToRemove <- c("X", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+cData <- cData[, !(colnames(cData) %in% colsToRemove)]
+
+dim(cData)
+names(cData)
+```
+
+## Center and Scale Data
+
+* It is always a good idea to standardize the data to reduce imbalance in magnitudes. Caret's _prePreocess_ function can be used with _center_ and _scale_ arguments. 
+
+```{r scale, cache=TRUE}
+preScale <- preProcess(cData[, names(cData) != "classe"], method = c("center", "scale"))
+training <- predict(preScale, cData[, names(cData) != "classe"])
+```
+
+## Prepare Test Set 
+
+* Drop columns to match training data. Additionally we don't have response variable in the training data
+* Apply data centering and scaling
+
+```{r prep-test, cache=TRUE}
+# Drop columns
+trainingColumns <- names(cData)[names(cData) != "classe"]
+cTesting <- subset(rTesting, select = trainingColumns)
+
+# Scaling
+testing <- predict(preScale, cTesting)
+```
+
+# Model Building and Prediction
+
+## Random Forest Algorithm
+
+Now that we have both training and test data ready for the machine learning implementation, we can build a Random Forest model first. Cross-Validation with 10 folds will also be used during training RF model for better fit and to get out of sample error rates.
+
+```{r trainRF, cache=TRUE}
+# Get resonse
+resp <- cData$classe
+set.seed(13625)
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel = TRUE)
+set.seed(587456)
+rfFit <- train(resp ~.,
+               method="rf",
+               data=training, 
+               trControl = fitControl)
+```
+
+### Model Performance
+
+* We can get model accuracy for each hold-out set using _rfFit$resample_. Mean accuracy for the 10 fold CV is 0.9949. 
+* _r confusionMatrix.train_ will provide the confusion matrix for the final model selected during training.  
+* When final model is used to estimate the training accuracy on the whole training data, we observe an accuracy of 1.
+* In general the accuracy rate generated by the RF model is very high and a little suspicious suggestiong overfitting. 
+
+```{r perfRF, cache=TRUE}
+kfoldacc <- rfFit$resample
+mean(kfoldacc$Accuracy)
+confusionMatrix.train(rfFit)
+pred_train <- predict(rfFit, newdata = training)
+confusionMatrix(pred_train, resp)
+```
+
+### Prediction
+
+* Finally we can use a new set to predict exercise quality. 
+
+```{r predcitRF, cache=TRUE}
+pred <- predict(rfFit, testing)
+pred
+```
