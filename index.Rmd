@@ -40,7 +40,7 @@ A set of training data set will be used to train various machine learning algori
 In this project I will use mainly the _caret_package for ML and _dplyr_ for certain data manipulations. I also prefer to use _doMC_ package to reduce the computation time.  
 
 ```{r setup, include = TRUE, warning=FALSE, message=FALSE}
-require(caret);require(doMC);require(dplyr)
+require(caret);require(doMC);require(dplyr);require(rpart);require(rpart.plot)
 # Register parallel cores for use in training to reduce time consumption.
 registerDoMC(cores = 6)
 ```
@@ -140,7 +140,11 @@ mean(kfoldacc$Accuracy)
 confusionMatrix.train(rfFit)
 pred_train <- predict(rfFit, newdata = training)
 confusionMatrix(pred_train, resp)
+treeModel <- rpart(resp ~ ., data=training, method="class")
+prp(treeModel)
 ```
+
+
 
 ### Prediction
 
